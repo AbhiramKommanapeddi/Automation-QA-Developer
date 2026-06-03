@@ -1,0 +1,525 @@
+{
+  "name": "Task 2 - API Integration Workflow (Abhik)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger-id",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        250,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "path": "trigger-digest",
+        "options": {}
+      },
+      "id": "webhook-trigger-id",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://api.github.com/search/repositories",
+        "authentication": "predefinedCredentialType",
+        "credentialType": "githubApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "topic:automation"
+            },
+            {
+              "name": "sort",
+              "value": "stars"
+            },
+            {
+              "name": "order",
+              "value": "desc"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "n8n-automation-workflow"
+            }
+          ]
+        },
+        "options": {
+          "redirect": {
+            "redirect": {}
+          }
+        }
+      },
+      "id": "github-search-id",
+      "name": "Get Automation Repos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        480,
+        320
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const response = $input.all();\nif (!response || response.length === 0 || !response[0].json || response[0].json.error || !response[0].json.items) {\n  return [{\n    json: {\n      success: false,\n      error: \"GitHub Search API request failed or returned empty items. Check API limits or credentials.\",\n      timestamp: new Date().toISOString()\n    }\n  }];\n}\n\nconst items = response[0].json.items;\nconst mappedItems = items.slice(0, 5).map((item, index) => {\n  return {\n    json: {\n      success: true,\n      rank: index + 1,\n      id: item.id,\n      name: item.name,\n      owner: item.owner ? item.owner.login : \"unknown\",\n      description: item.description || \"No description provided.\",\n      stars: item.stargazers_count,\n      forks: item.forks_count,\n      url: item.html_url,\n      full_name: item.full_name,\n      timestamp: new Date().toISOString()\n    }\n  };\n});\n\nreturn mappedItems;"
+      },
+      "id": "reshape-filter-id",
+      "name": "Reshape & Filter Top 5",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "success-check",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "check-success-id",
+      "name": "Check API Success",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.github.com/repos/{{ $json.owner }}/{{ $json.name }}/languages",
+        "authentication": "predefinedCredentialType",
+        "credentialType": "githubApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "n8n-automation-workflow"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "github-languages-id",
+      "name": "Get Languages Breakdown",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1100,
+        220
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nreturn items.map((item, index) => {\n  const repoItem = $node[\"Reshape & Filter Top 5\"].itemMatching(index).json;\n  const languages = item.json;\n  \n  const langKeys = Object.keys(languages);\n  let primary = \"None\";\n  let formattedLangs = \"None\";\n  \n  if (langKeys.length > 0 && !languages.error) {\n    const sortedLangs = langKeys.sort((a,b) => languages[b] - languages[a]);\n    primary = sortedLangs[0];\n    const totalBytes = Object.values(languages).reduce((sum, val) => sum + val, 0);\n    formattedLangs = sortedLangs.slice(0, 3).map(lang => {\n      const pct = ((languages[lang] / totalBytes) * 100).toFixed(1);\n      return `${lang} (${pct}%)`;\n    }).join(\", \");\n  }\n  \n  return {\n    json: {\n      rank: repoItem.rank,\n      name: repoItem.name,\n      owner: repoItem.owner,\n      description: repoItem.description,\n      stars: repoItem.stars,\n      forks: repoItem.forks,\n      url: repoItem.url,\n      primary_language: primary,\n      languages_summary: formattedLangs,\n      timestamp: repoItem.timestamp\n    }\n  };\n});"
+      },
+      "id": "merge-languages-id",
+      "name": "Merge & Format Enriched",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "star-check",
+              "leftValue": "={{ $json.stars }}",
+              "rightValue": "1000",
+              "operator": {
+                "type": "number",
+                "operation": "larger"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "stars-threshold-id",
+      "name": "Filter Stars Threshold",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1520,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "set-text-hot",
+              "name": "content",
+              "value": "=🔥 **HOT AUTOMATION TOOL FOUND!** 🔥\n**Repository**: [{{ $json.owner }}/{{ $json.name }}]({{ $json.url }})\n**Stars**: ⭐ {{ $json.stars.toLocaleString() }} | **Forks**: 🍴 {{ $json.forks.toLocaleString() }}\n**Primary Language**: 💻 {{ $json.primary_language }} ({{ $json.languages_summary }})\n**Description**: *{{ $json.description }}*\n*Ranked #{{ $json.rank }} in daily brief.*",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "format-hot-id",
+      "name": "Format Highly Popular",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1750,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "set-text-emerging",
+              "name": "content",
+              "value": "=📈 **EMERGING AUTOMATION TOOL** 📈\n**Repository**: [{{ $json.owner }}/{{ $json.name }}]({{ $json.url }})\n**Stars**: ⭐ {{ $json.stars.toLocaleString() }}\n**Languages**: 💻 {{ $json.languages_summary }}\n**Description**: *{{ $json.description }}*\n*Ranked #{{ $json.rank }} in daily brief.*",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "format-emerging-id",
+      "name": "Format Emerging",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1750,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://discord.com/api/webhooks/YOUR_DISCORD_WEBHOOK_URL_HERE",
+        "authentication": "predefinedCredentialType",
+        "credentialType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"content\": \"{{ $json.content }}\"\n}",
+        "options": {}
+      },
+      "id": "discord-notify-id",
+      "name": "Send Discord Digest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1980,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "set-error-msg",
+              "name": "content",
+              "value": "=⚠️ **API Workflow Degraded Mode Alert!** ⚠️\n**Error Details**: {{ $json.error }}\n*Generated automatically by fallback routing.*",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "format-error-id",
+      "name": "Format API Error Fallback",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1100,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://discord.com/api/webhooks/YOUR_DISCORD_WEBHOOK_URL_HERE",
+        "authentication": "predefinedCredentialType",
+        "credentialType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"content\": \"{{ $json.content }}\"\n}",
+        "options": {}
+      },
+      "id": "discord-error-notify-id",
+      "name": "Send Fallback Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1320,
+        420
+      ]
+    },
+    {
+      "id": "global-error-trigger-id",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        250,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "set-crash-msg",
+              "name": "content",
+              "value": "=🚨 **n8n Workflow Execution Crash!** 🚨\n**Workflow Name**: `Task 2 - API Integration Workflow`\n**Failed Node**: `{{ $json.execution.error.nodeName }}`\n**Error Message**: `{{ $json.execution.error.message }}`\n**Execution ID**: `{{ $json.execution.id }}`\n*Alert triggered by global Error Node.*",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "format-crash-id",
+      "name": "Format Crash Alert",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        480,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://discord.com/api/webhooks/YOUR_DISCORD_WEBHOOK_URL_HERE",
+        "authentication": "predefinedCredentialType",
+        "credentialType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"content\": \"{{ $json.content }}\"\n}",
+        "options": {}
+      },
+      "id": "discord-crash-notify-id",
+      "name": "Send Crash Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        680,
+        600
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Automation Repos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Automation Repos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Automation Repos": {
+      "main": [
+        [
+          {
+            "node": "Reshape & Filter Top 5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reshape & Filter Top 5": {
+      "main": [
+        [
+          {
+            "node": "Check API Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check API Success": {
+      "main": [
+        [
+          {
+            "node": "Get Languages Breakdown",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format API Error Fallback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Languages Breakdown": {
+      "main": [
+        [
+          {
+            "node": "Merge & Format Enriched",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge & Format Enriched": {
+      "main": [
+        [
+          {
+            "node": "Filter Stars Threshold",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Stars Threshold": {
+      "main": [
+        [
+          {
+            "node": "Format Highly Popular",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format Emerging",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Highly Popular": {
+      "main": [
+        [
+          {
+            "node": "Send Discord Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Emerging": {
+      "main": [
+        [
+          {
+            "node": "Send Discord Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format API Error Fallback": {
+      "main": [
+        [
+          {
+            "node": "Send Fallback Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Format Crash Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Crash Alert": {
+      "main": [
+        [
+          {
+            "node": "Send Crash Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionTimeout": 3600
+  }
+}
